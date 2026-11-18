@@ -2,6 +2,26 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
+<script>
+/* DIAGNÓSTICO EN PANTALLA: muestra errores reales (script, promesas, recursos bloqueados, CSP)
+   en una barra roja tocable. No aparece si no hay errores. */
+(function(){
+ var lines=[];
+ function bar(){var b=document.getElementById("diag");if(b)return b;
+  b=document.createElement("div");b.id="diag";b.setAttribute("role","alert");
+  b.style.cssText="position:fixed;left:8px;right:8px;top:calc(8px + env(safe-area-inset-top,0px));z-index:2147483647;background:#7a1f1f;color:#fff;padding:10px 12px;border-radius:10px;font:12px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.35);max-height:40vh;overflow:auto;white-space:pre-wrap;word-break:break-word";
+  b.addEventListener("click",function(){b.remove();lines=[]});
+  (document.body||document.documentElement).appendChild(b);return b}
+ function show(m){m=String(m).slice(0,240);if(lines.indexOf(m)>-1)return;lines.push(m);if(lines.length>4)lines.shift();
+  var b=bar();b.textContent="\u26A0 Aviso técnico (toca para cerrar)\n"+lines.join("\n")}
+ addEventListener("error",function(e){
+  if(e.target&&e.target!==window&&e.target.tagName==="SCRIPT"){show("No se pudo cargar el script: "+(e.target.src||"(en línea)"));return}
+  if(/ResizeObserver/.test(e.message||""))return;
+  show("Error: "+(e.message||"desconocido")+(e.lineno?" (línea "+e.lineno+")":""))},true);
+ addEventListener("unhandledrejection",function(e){var r=e.reason;show("Promesa rechazada: "+((r&&r.message)||r))});
+ addEventListener("securitypolicyviolation",function(e){show("Bloqueado por política de seguridad: "+e.violatedDirective+" "+(e.blockedURI||""))});
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Espacio Sináptico | Coordinación</title>
 <style>
@@ -272,9 +292,9 @@ button:focus-visible{outline:2px solid var(--teal-d);outline-offset:2px}
   <div class="sh-body" id="who-b">
    <p class="intro">Selecciona tu nombre para ingresar al espacio compartido.</p>
    <div class="who-options" style="display:grid;grid-template-columns:1fr;gap:10px">
-    <button type="button" class="who-choice" onclick="selectProfile('Cat')" data-act="pick" data-p="Cat">Cat</button>
-    <button type="button" class="who-choice" onclick="selectProfile('Thomas')" data-act="pick" data-p="Thomas">Thomas</button>
-    <button type="button" class="who-choice" onclick="selectProfile('Laura')" data-act="pick" data-p="Laura">Laura</button>
+    <button type="button" class="who-choice" data-act="pick" data-p="Cat">Cat</button>
+    <button type="button" class="who-choice" data-act="pick" data-p="Thomas">Thomas</button>
+    <button type="button" class="who-choice" data-act="pick" data-p="Laura">Laura</button>
    </div>
   </div>
  </div>
@@ -290,9 +310,12 @@ const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_456TAybBtaYLAEBI5mqPeg_hZwcbFlV
 const AUTH_EMAILS = {Cat:"cat@mwxdrdrjmpschlujjfmg.supabase.co", Thomas:"thomas@mwxdrdrjmpschlujjfmg.supabase.co", Laura:"laura@mwxdrdrjmpschlujjfmg.supabase.co"};
 let selectedPerson = null;
 // Si el CDN no está disponible, la aplicación sigue pudiendo mostrar la pantalla de acceso.
-const supabase = (window.supabase && typeof window.supabase.createClient === "function")
- ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
- : null;
+// El cliente se llama "sb" (no "supabase") para no chocar con el global window.supabase de la biblioteca.
+let sb = null, sbError = null;
+try{
+  if(window.supabase && typeof window.supabase.createClient === "function") sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+  else sbError = "La biblioteca supabase-js no se cargó desde el CDN.";
+}catch(e){ sbError = "No se pudo crear el cliente de Supabase: " + (e && e.message || e); console.error(e); }
 function makeSupabaseDB(){
  const subscriptions=[];
  const clone=v=>v==null?v:JSON.parse(JSON.stringify(v));
@@ -303,7 +326,7 @@ function makeSupabaseDB(){
   onSnapshot:(cb,err)=>{
    let stopped=false,channel;
    const refresh=async()=>{try{
-    let {data,error}=await supabase.from("app_records").select("id,data").eq("collection",name);
+    let {data,error}=await sb.from("app_records").select("id,data").eq("collection",name);
     if(error)throw error;
     let docs=(data||[]).map(r=>({id:r.id,data:()=>clone(r.data)}));
     (q.w||[]).forEach(([f,op,v])=>{docs=docs.filter(d=>{const x=d.data()[f];return op==="=="?x===v:op==="!="?x!==v:false})});
@@ -312,23 +335,23 @@ function makeSupabaseDB(){
     if(!stopped)cb({docs,metadata:{fromCache:false}});
    }catch(e){if(!stopped&&err)err(e);else if(!stopped)console.error(e)}};
    refresh();
-   channel=supabase.channel("app-"+name+"-"+Math.random().toString(36).slice(2)).on("postgres_changes",{event:"*",schema:"public",table:"app_records",filter:"collection=eq."+name},refresh).subscribe();
-   subscriptions.push(()=>{stopped=true;supabase.removeChannel(channel)});
+   channel=sb.channel("app-"+name+"-"+Math.random().toString(36).slice(2)).on("postgres_changes",{event:"*",schema:"public",table:"app_records",filter:"collection=eq."+name},refresh).subscribe();
+   subscriptions.push(()=>{stopped=true;sb.removeChannel(channel)});
   }
  }}
  async function write(name,op,id,data){
-  if(op==="delete"){const {error}=await supabase.from("app_records").delete().eq("collection",name).eq("id",id);if(error)throw error;return}
-  if(op==="set"){const {error}=await supabase.from("app_records").upsert({collection:name,id:id,data:clone(data)},{onConflict:"collection,id"});if(error)throw error;return}
+  if(op==="delete"){const {error}=await sb.from("app_records").delete().eq("collection",name).eq("id",id);if(error)throw error;return}
+  if(op==="set"){const {error}=await sb.from("app_records").upsert({collection:name,id:id,data:clone(data)},{onConflict:"collection,id"});if(error)throw error;return}
   if(op==="update"){
-   const {data:row,error}=await supabase.from("app_records").select("data").eq("collection",name).eq("id",id).maybeSingle();
+   const {data:row,error}=await sb.from("app_records").select("data").eq("collection",name).eq("id",id).maybeSingle();
    if(error)throw error;if(!row)throw Object.assign(new Error("No existe"),{code:"not-found"});
-   const {error:upErr}=await supabase.from("app_records").update({data:{...row.data,...clone(data)}}).eq("collection",name).eq("id",id);if(upErr)throw upErr;
+   const {error:upErr}=await sb.from("app_records").update({data:{...row.data,...clone(data)}}).eq("collection",name).eq("id",id);if(upErr)throw upErr;
   }
  }
  const newId=()=>"d"+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
  return {collection:name=>Object.assign(query(name,{}),{
   add:async d=>{const id=newId();await write(name,"set",id,d);return{id}},
-  doc:id=>({get:async()=>{const {data,error}=await supabase.from("app_records").select("data").eq("collection",name).eq("id",id).maybeSingle();if(error)throw error;return{exists:!!data,data:()=>data&&clone(data.data)}},set:d=>write(name,"set",id,d),update:d=>write(name,"update",id,d),delete:()=>write(name,"delete",id)})
+  doc:id=>({get:async()=>{const {data,error}=await sb.from("app_records").select("data").eq("collection",name).eq("id",id).maybeSingle();if(error)throw error;return{exists:!!data,data:()=>data&&clone(data.data)}},set:d=>write(name,"set",id,d),update:d=>write(name,"update",id,d),delete:()=>write(name,"delete",id)})
  })};
 }
 const claude={use:async k=>k==="db"?makeSupabaseDB():null};
@@ -358,8 +381,8 @@ async function boot(){
  open("who");
  try{
   paint();
-  if(!supabase)throw new Error("La biblioteca supabase-js no se pudo cargar desde el CDN.");
-  const {data:{session},error}=await supabase.auth.getSession();if(error)throw error;
+  if(!sb)throw new Error(sbError||"La biblioteca supabase-js no se pudo cargar desde el CDN.");
+  const {data:{session},error}=await Promise.race([sb.auth.getSession(),new Promise((_,rej)=>setTimeout(()=>rej(new Error("Supabase tardó más de 8 s en responder.")),8000))]);if(error)throw error;
   if(session){me=Object.keys(AUTH_EMAILS).find(n=>AUTH_EMAILS[n].toLowerCase()===String(session.user.email||"").toLowerCase())||null;}
   if(!session||!me){me=null;return;}
   close();
@@ -505,10 +528,10 @@ function renderWho(){
  // Solo se permite avanzar con uno de los tres perfiles definidos en esta aplicación.
  if(selectedPerson&&!PEOPLE.includes(selectedPerson))selectedPerson=null;
  if(!selectedPerson){
-  target.innerHTML=`<p class="intro">Selecciona tu nombre para ingresar al espacio compartido.</p><div class="who-options">${PEOPLE.map(p=>`<button type="button" class="who-choice" onclick="selectProfile('${p}')" data-act="pick" data-p="${p}">${p}</button>`).join("")}</div>`;
+  target.innerHTML=`<p class="intro">Selecciona tu nombre para ingresar al espacio compartido.</p><div class="who-options">${PEOPLE.map(p=>`<button type="button" class="who-choice" data-act="pick" data-p="${p}">${p}</button>`).join("")}</div>`;
   return;
  }
- target.innerHTML=`<p class="intro">Ingresa la contraseña personal de <b>${esc(selectedPerson)}</b>.</p><form id="login-form" onsubmit="handleLogin(event); return false" style="display:grid;gap:12px"><input id="login-pass" type="password" autocomplete="current-password" placeholder="Contraseña" required style="width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--card)"><button class="btn" type="submit">Entrar</button><button class="btn sec" type="button" data-act="backwho">Elegir otro nombre</button><p id="login-error" class="intro" role="alert"></p></form>`;
+ target.innerHTML=`<p class="intro">Ingresa la contraseña personal de <b>${esc(selectedPerson)}</b>.</p><form id="login-form" method="post" novalidate style="display:grid;gap:12px"><input id="login-pass" type="password" autocomplete="current-password" placeholder="Contraseña" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--card)"><button class="btn" type="submit">Entrar</button><button class="btn sec" type="button" data-act="backwho">Elegir otro nombre</button><p id="login-error" class="intro" role="alert"></p></form>`;
 }
 
 // ---------- hojas ----------
@@ -546,8 +569,8 @@ async function handleLogin(e){
  submit.disabled=true;submit.textContent="Verificando…";errorBox.textContent="Conectando con Supabase…";
  let timeoutId;
  try{
-  if(!supabase)throw new Error("No se pudo cargar la conexión con Supabase. Comprueba tu conexión a internet y recarga la página.");
-  const authPromise=supabase.auth.signInWithPassword({email,password:pass});
+  if(!sb)throw new Error(sbError||"No se pudo cargar la conexión con Supabase. Comprueba tu conexión a internet y recarga la página.");
+  const authPromise=sb.auth.signInWithPassword({email,password:pass});
   const timeoutPromise=new Promise((_,reject)=>{timeoutId=setTimeout(()=>reject(new Error("La conexión está tardando demasiado. Comprueba internet e inténtalo de nuevo.")),15000)});
   const result=await Promise.race([authPromise,timeoutPromise]);
   clearTimeout(timeoutId);
@@ -1076,19 +1099,20 @@ document.addEventListener("click",e=>{const b=e.target.closest("[data-act]");if(
 
 function bellUpd(){const n=nUnread(),b=$("#bell-n");if(b){b.hidden=!n;b.textContent=n>9?"9+":n}}
 
-// Selección de perfil en fase de captura: funciona aunque otro manejador de clic
-// de la aplicación interfiera. El campo de contraseña se dibuja inmediatamente.
+// Selección de perfil (fase de captura) y envío del formulario de acceso.
+// Ambos usan listeners, no atributos en línea, para funcionar aunque el entorno bloquee scripts en línea.
 document.addEventListener("click", function(e){
- const choice=e.target && e.target.closest ? e.target.closest(".who-choice") : null;
- if(!choice) return;
- e.preventDefault();
- e.stopImmediatePropagation();
- const person=choice.dataset.p;
- if(!PEOPLE.includes(person)) return;
- selectedPerson=person;
- renderWho();
- const pass=document.getElementById("login-pass");
- if(pass) pass.focus();
+  const choice=e.target && e.target.closest ? e.target.closest(".who-choice") : null;
+  if(!choice) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  selectProfile(choice.dataset.p);
+}, true);
+document.addEventListener("submit", function(e){
+  if(!e.target || e.target.id!=="login-form") return;
+  e.preventDefault();          // nunca permitir el envío nativo (recargaría la página)
+  e.stopImmediatePropagation();
+  handleLogin(e);
 }, true);
 
 boot();
